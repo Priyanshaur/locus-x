@@ -1,0 +1,167 @@
+"""Reproducible evaluation CLI: python -m backend.locus_x.benchmark."""
+
+import argparse
+import csv
+import hashlib
+import json
+from pathlib import Path
+from time import perf_counter
+
+import numpy as np
+
+from .environment import load_environments
+from .schemas import PRESETS, BenchmarkRequest, Environment, Settings
+from .session import SimulationSession
+
+ANCHOR_SELECTION = {
+    3: ["A1", "A3", "A6"],
+    4: ["A1", "A3", "A5", "A7"],
+    6: ["A1", "A2", "A3", "A5", "A6", "A7"],
+    8: [f"A{i}" for i in range(1, 9)],
+}
+
+
+def summarize(records: list[dict], method: str) -> dict:
+    errors = [r[f"{method}_error"] for r in records if r[f"{method}_error"] is not None]
+    nlos = [
+        r[f"{method}_error"] for r in records if r["has_nlos"] and r[f"{method}_error"] is not None
+    ]
+    dropout = [
+        r[f"{method}_error"]
+        for r in records
+        if r["has_dropout"] and r[f"{method}_error"] is not None
+    ]
+    coverage = (
+        [r["covered_95"] for r in records if r["covered_95"] is not None]
+        if method == "proposed"
+        else []
+    )
+    return {
+        "method": method,
+        "frames": len(records),
+        "valid_frames": len(errors),
+        "rmse": float(np.sqrt(np.mean(np.square(errors)))) if errors else None,
+        "median": float(np.median(errors)) if errors else None,
+        "p95": float(np.percentile(errors, 95)) if errors else None,
+        "valid_rate": len(errors) / len(records),
+        "update_rate": sum(r[f"{method}_updated"] for r in records) / len(records),
+        "nlos_rmse": float(np.sqrt(np.mean(np.square(nlos)))) if nlos else None,
+        "dropout_rmse": float(np.sqrt(np.mean(np.square(dropout)))) if dropout else None,
+        "latency_ms": float(np.mean([r[f"{method}_runtime"] for r in records])),
+        "coverage_95": float(np.mean(coverage)) if coverage else None,
+    }
+
+
+def run_benchmark(
+    config: BenchmarkRequest, environment: Environment | None = None, progress=None
+) -> dict:
+    environment = environment or load_environments()["hospital_floor_01"]
+    start = perf_counter()
+    rows, traces, distributions = [], {}, {}
+    completed = 0
+    total = len(config.scenarios) * len(config.anchor_counts) * len(config.seeds) * config.steps
+    for scenario in config.scenarios:
+        for count in config.anchor_counts:
+            records = []
+            key = f"{scenario}/{count}"
+            for seed_index, seed in enumerate(config.seeds):
+                settings = Settings(
+                    scenario=scenario,
+                    **PRESETS[scenario],
+                    seed=seed,
+                    route=config.route,
+                    disabled_anchors=[
+                        a.id for a in environment.anchors if a.id not in ANCHOR_SELECTION[count]
+                    ],
+                )
+                session = SimulationSession(environment, settings)
+                trace = []
+                for _ in range(config.steps):
+                    frame = session.advance(config.dt)
+                    record = frame.evaluation.model_dump()
+                    record.update(
+                        {
+                            "baseline_updated": frame.baseline.position is not None,
+                            "proposed_updated": frame.tracking.updated,
+                            "baseline_runtime": frame.baseline.runtime_ms,
+                            "proposed_runtime": frame.robust.runtime_ms + frame.tracking.runtime_ms,
+                        }
+                    )
+                    records.append(record)
+                    trace.append(
+                        {
+                            "t": frame.timestamp,
+                            "baseline": record["baseline_error"],
+                            "proposed": record["proposed_error"],
+                        }
+                    )
+                    completed += 1
+                    if progress and completed % 40 == 0:
+                        progress(completed / total)
+                if seed_index == 0:
+                    traces[key] = trace
+            for method in ("baseline", "proposed"):
+                rows.append(
+                    {
+                        "scenario": scenario,
+                        "anchors": count,
+                        "seeds": ",".join(map(str, config.seeds)),
+                        **summarize(records, method),
+                    }
+                )
+            distributions[key] = {
+                method: [
+                    float(v) for v in np.quantile(values, np.linspace(0, 1, min(101, len(values))))
+                ]
+                if values
+                else []
+                for method in ("baseline", "proposed")
+                if (
+                    values := sorted(
+                        r[f"{method}_error"] for r in records if r[f"{method}_error"] is not None
+                    )
+                )
+                is not None
+            }
+    if progress:
+        progress(1.0)
+    return {
+        "config": config.model_dump(),
+        "environment_id": environment.id,
+        "environment_sha256": hashlib.sha256(environment.model_dump_json().encode()).hexdigest(),
+        "rows": rows,
+        "traces": traces,
+        "distributions": distributions,
+        "elapsed_seconds": perf_counter() - start,
+        "notes": (
+            "Synthetic held-out route and seeds. Runtime is nondeterministic. "
+            "Coverage is empirical, not a calibration claim. "
+            "Trace uses first seed; metrics use all seeds."
+        ),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=Path("configs/benchmarks/competition.json"))
+    parser.add_argument("--output", type=Path, default=Path("artifacts/benchmark"))
+    args = parser.parse_args()
+    config = BenchmarkRequest.model_validate_json(args.config.read_text(encoding="utf-8"))
+    result = run_benchmark(config)
+    args.output.mkdir(parents=True, exist_ok=True)
+    (args.output / "results.json").write_text(
+        json.dumps(result, indent=2, allow_nan=False), encoding="utf-8"
+    )
+    with (args.output / "metrics.csv").open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=list(result["rows"][0]))
+        writer.writeheader()
+        writer.writerows(result["rows"])
+    print(
+        f"Evaluated {len(result['rows'])} method/scenario/count rows "
+        f"in {result['elapsed_seconds']:.1f}s"
+    )
+    print(f"Saved {args.output / 'metrics.csv'} and results.json")
+
+
+if __name__ == "__main__":
+    main()
