@@ -3,35 +3,40 @@ from pathlib import Path
 
 import numpy as np
 
+from .building import Building, Floor
+from .geometry import intersects as intersects
 from .schemas import Environment, Point, Waypoint
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs" / "environments"
 
 
-def load_environments() -> dict[str, Environment]:
-    return {
-        data.id: data
-        for path in sorted(CONFIG_DIR.glob("*.json"))
-        if (data := Environment.model_validate(json.loads(path.read_text(encoding="utf-8"))))
-    }
+def load_environments() -> dict[str, Environment | Building]:
+    environments = {}
+    for path in sorted(CONFIG_DIR.glob("*.json")):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        model = Building if raw.get("schema_version") == "3.0" else Environment
+        data = model.model_validate(raw)
+        if data.id in environments:
+            raise ValueError(f"Duplicate environment ID: {data.id}")
+        environments[data.id] = data
+    return environments
 
 
-def intersects(a: Point, b: Point, c: Point, d: Point) -> bool:
-    """Closed segment intersection, including collinear overlap; gaps are absent segments."""
+def resolve_floor(environment: Environment | Building, floor_id: str | None = None) -> Environment:
+    """Select geometry before simulation. This does not estimate the target's floor."""
+    if isinstance(environment, Building):
+        selected = floor_id or environment.default_floor_id
+        for floor in environment.floors:
+            if floor.id == selected:
+                return floor
+        raise ValueError(f"Unknown floor: {selected}")
+    if floor_id is not None and floor_id != environment.id:
+        raise ValueError(f"Unknown floor: {floor_id}")
+    return environment
 
-    def cross(p, q, r):
-        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
 
-    def on_segment(p, q, r):
-        return all(min(p[i], r[i]) - 1e-9 <= q[i] <= max(p[i], r[i]) + 1e-9 for i in (0, 1))
-
-    v = [cross(a, b, c), cross(a, b, d), cross(c, d, a), cross(c, d, b)]
-    if v[0] * v[1] < -1e-12 and v[2] * v[3] < -1e-12:
-        return True
-    return any(
-        abs(o) < 1e-9 and on_segment(p, q, r)
-        for o, p, q, r in [(v[0], a, c, b), (v[1], a, d, b), (v[2], c, a, d), (v[3], c, b, d)]
-    )
+def floor_elevation(floor: Environment) -> float:
+    return floor.elevation if isinstance(floor, Floor) else 0.0
 
 
 def route_position(route: list[Waypoint], timestamp: float, speed: float) -> Point:

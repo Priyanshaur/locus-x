@@ -1,9 +1,11 @@
 from copy import deepcopy
+from hashlib import sha256
 from threading import RLock
 from time import monotonic
 from uuid import uuid4
 
-from .environment import route_position
+from .building import Building
+from .environment import floor_elevation, resolve_floor, route_position
 from .estimators import solve
 from .evaluation import evaluate
 from .schemas import PRESETS, Controls, Environment, Event, Frame, Settings
@@ -12,9 +14,14 @@ from .tracking import MotionTracker
 
 
 class SimulationSession:
-    def __init__(self, environment: Environment, settings: Settings):
+    def __init__(
+        self, environment: Environment | Building, settings: Settings, floor_id: str | None = None
+    ):
         self.id = str(uuid4())
-        self.environment = environment
+        self.configuration = environment
+        self.environment = resolve_floor(environment, floor_id)
+        self.initial_floor_id = self.environment.id
+        self.environment_sha256 = sha256(environment.model_dump_json().encode()).hexdigest()
         self.validate_settings(settings)
         self.initial_settings = settings.model_copy(deep=True)
         self.settings = settings.model_copy(deep=True)
@@ -77,6 +84,13 @@ class SimulationSession:
         self.touched = monotonic()
         return Frame(
             session_id=self.id,
+            environment_id=self.configuration.id,
+            environment_version=(
+                self.configuration.version if isinstance(self.configuration, Building) else "1.0"
+            ),
+            environment_sha256=self.environment_sha256,
+            floor_id=self.environment.id,
+            floor_elevation=floor_elevation(self.environment),
             revision=self.revision,
             frame_index=self.frame_index,
             timestamp=self.timestamp,
@@ -104,7 +118,25 @@ class SimulationSession:
 
     def reset(self):
         """Restore the settings captured when this session was created."""
+        self.environment = resolve_floor(self.configuration, self.initial_floor_id)
         self.settings = self.initial_settings.model_copy(deep=True)
+        return self.restart()
+
+    def select_floor(self, floor_id: str):
+        """A manual floor selection starts a separate 2-D run; no state crosses floors."""
+        selected = resolve_floor(self.configuration, floor_id)
+        if selected.id == self.environment.id:
+            return self.frame
+        updates = {
+            "route": self.settings.route
+            if self.settings.route in selected.routes
+            else next(iter(selected.routes)),
+            "disabled_anchors": [
+                a for a in self.settings.disabled_anchors if a in {s.id for s in selected.anchors}
+            ],
+        }
+        self.environment = selected
+        self.settings = self.settings.model_copy(update=updates)
         return self.restart()
 
     def restart(self):
@@ -114,7 +146,12 @@ class SimulationSession:
         self.revision += 1
         self.tracker = MotionTracker()
         self.trust = {}
-        self.events = [Event(timestamp=0, message=f"Run initialized · seed {self.settings.seed}")]
+        self.events = [
+            Event(
+                timestamp=0,
+                message=f"Run initialized · {self.environment.name} · seed {self.settings.seed}",
+            )
+        ]
         # The previous run's fault state must not generate spurious recovery events.
         self.frame = None
         self.frame = self.compute()

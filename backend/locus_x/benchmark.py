@@ -4,12 +4,14 @@ import argparse
 import csv
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 
-from .environment import load_environments
+from .building import Building
+from .environment import load_environments, resolve_floor
 from .schemas import PRESETS, BenchmarkRequest, Environment, Settings
 from .session import SimulationSession
 
@@ -53,9 +55,16 @@ def summarize(records: list[dict], method: str) -> dict:
 
 
 def run_benchmark(
-    config: BenchmarkRequest, environment: Environment | None = None, progress=None
+    config: BenchmarkRequest, environment: Environment | Building | None = None, progress=None
 ) -> dict:
-    environment = environment or load_environments()["hospital_floor_01"]
+    configuration = environment or load_environments()[config.environment_id]
+    environment = resolve_floor(configuration, config.floor_id)
+    if config.route not in environment.routes:
+        raise ValueError("Unknown target route")
+    if not {a for count in config.anchor_counts for a in ANCHOR_SELECTION[count]} <= {
+        a.id for a in environment.anchors
+    }:
+        raise ValueError("This benchmark protocol requires its named A1–A8 anchor subsets")
     start = perf_counter()
     rows, traces, distributions = [], {}, {}
     completed = 0
@@ -74,7 +83,7 @@ def run_benchmark(
                         a.id for a in environment.anchors if a.id not in ANCHOR_SELECTION[count]
                     ],
                 )
-                session = SimulationSession(environment, settings)
+                session = SimulationSession(configuration, settings, environment.id)
                 trace = []
                 for _ in range(config.steps):
                     frame = session.advance(config.dt)
@@ -126,9 +135,21 @@ def run_benchmark(
     if progress:
         progress(1.0)
     return {
-        "config": config.model_dump(),
-        "environment_id": environment.id,
-        "environment_sha256": hashlib.sha256(environment.model_dump_json().encode()).hexdigest(),
+        "config": config.model_dump()
+        if isinstance(configuration, Building)
+        else config.model_dump(exclude={"environment_id", "floor_id"}),
+        "environment_id": configuration.id,
+        "environment_sha256": hashlib.sha256(configuration.model_dump_json().encode()).hexdigest(),
+        **(
+            {
+                "result_version": "3.0",
+                "environment_version": configuration.version,
+                "floor_id": environment.id,
+                "localization_mode": "2d_on_known_floor",
+            }
+            if isinstance(configuration, Building)
+            else {}
+        ),
         "rows": rows,
         "traces": traces,
         "distributions": distributions,
@@ -144,9 +165,18 @@ def run_benchmark(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("configs/benchmarks/competition.json"))
-    parser.add_argument("--output", type=Path, default=Path("artifacts/benchmark"))
+    parser.add_argument(
+        "--output", type=Path, help="New output directory; existing results are protected"
+    )
     args = parser.parse_args()
     config = BenchmarkRequest.model_validate_json(args.config.read_text(encoding="utf-8"))
+    if args.output is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        args.output = Path("artifacts/benchmark-runs") / f"{config.environment_id}-{stamp}"
+    if any((args.output / name).exists() for name in ("results.json", "metrics.csv")):
+        parser.error(
+            "Output contains existing experiment artifacts; choose a new --output directory"
+        )
     result = run_benchmark(config)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "results.json").write_text(

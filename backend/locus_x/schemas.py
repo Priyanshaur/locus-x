@@ -94,6 +94,7 @@ PRESETS: dict[str, dict] = {
 
 class SessionCreate(StrictModel):
     environment_id: str = "hospital_floor_01"
+    floor_id: str | None = None
     settings: Settings = Field(default_factory=Settings)
 
 
@@ -117,6 +118,10 @@ class Advance(StrictModel):
 
 class Revision(StrictModel):
     expected_revision: int = Field(ge=0)
+
+
+class FloorSelection(Revision):
+    floor_id: str = Field(min_length=1)
 
 
 class Measurement(StrictModel):
@@ -185,6 +190,12 @@ class Event(StrictModel):
 
 class Frame(StrictModel):
     session_id: str
+    environment_id: str
+    environment_version: str
+    environment_sha256: str
+    floor_id: str
+    floor_elevation: float
+    localization_mode: Literal["2d_on_known_floor"] = "2d_on_known_floor"
     revision: int
     frame_index: int
     timestamp: float
@@ -200,6 +211,8 @@ class Frame(StrictModel):
 
 
 class BenchmarkRequest(StrictModel):
+    environment_id: str = "hospital_floor_01"
+    floor_id: str | None = None
     scenarios: list[Scenario] = Field(
         default_factory=lambda: list(PRESETS), min_length=1, max_length=7
     )

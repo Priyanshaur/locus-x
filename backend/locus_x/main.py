@@ -10,13 +10,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .benchmark import run_benchmark
-from .environment import load_environments
+from .building import Building
+from .environment import load_environments, resolve_floor
 from .schemas import (
     PRESETS,
     Advance,
     BenchmarkRequest,
     Controls,
     Environment,
+    FloorSelection,
     Frame,
     Revision,
     SessionCreate,
@@ -37,11 +39,11 @@ async def lifespan(app):
     executor.shutdown(wait=False, cancel_futures=True)
 
 
-app = FastAPI(title="LOCUS-X", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="LOCUS-X", version="3.0.0", lifespan=lifespan)
 
 
 class EnvironmentList(StrictModel):
-    environments: list[Environment]
+    environments: list[Environment | Building]
     presets: dict[str, dict]
     coordinate_system: str
 
@@ -58,7 +60,7 @@ class BenchmarkJob(StrictModel):
 def health() -> dict[str, str]:
     return {
         "status": "ok",
-        "version": "1.0.0",
+        "version": "3.0.0",
         "engine": "numpy/scipy · robust ranges + Kalman tracking",
     }
 
@@ -87,7 +89,7 @@ def create_session(request: SessionCreate):
     if environment is None:
         raise HTTPException(404, "Unknown environment")
     try:
-        session = SimulationSession(environment, request.settings)
+        session = SimulationSession(environment, request.settings, request.floor_id)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     with store_lock:
@@ -140,8 +142,24 @@ def reset(session_id: str, request: Revision):
     return mutate(session_id, request, lambda session: session.reset())
 
 
+@app.post("/api/v1/sessions/{session_id}/floor", response_model=Frame)
+def select_floor(session_id: str, request: FloorSelection):
+    return mutate(session_id, request, lambda session: session.select_floor(request.floor_id))
+
+
 @app.post("/api/v1/benchmarks", response_model=BenchmarkJob, status_code=202)
 def start_benchmark(request: BenchmarkRequest):
+    environment = environments.get(request.environment_id)
+    if environment is None:
+        raise HTTPException(404, "Unknown environment")
+    try:
+        floor = resolve_floor(environment, request.floor_id)
+        if request.route not in floor.routes:
+            raise ValueError("Unknown target route")
+        if not {f"A{i}" for i in range(1, 9)} <= {a.id for a in floor.anchors}:
+            raise ValueError("This benchmark protocol requires installed anchors A1–A8")
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     with store_lock:
         if any(job["status"] in ("queued", "running") for job in jobs.values()):
             raise HTTPException(409, "A benchmark is already running")
@@ -158,7 +176,7 @@ def start_benchmark(request: BenchmarkRequest):
         try:
             with store_lock:
                 job["status"] = "running"
-            result = run_benchmark(request, progress=progress)
+            result = run_benchmark(request, environment=environment, progress=progress)
             with store_lock:
                 job.update(status="complete", result=result)
         except Exception:
