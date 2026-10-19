@@ -7,13 +7,18 @@ export const fmt = (value: number | null | undefined, digits = 2) => value == nu
 export const percent = (value: number | null | undefined) => value == null ? '—' : `${(value * 100).toFixed(1)}%`;
 export const scenarioNames = { clean: 'Clean line of sight', noise: 'Moderate noise', high_noise: 'High noise', nlos: 'Wall obstruction', packet_loss: 'Packet loss', anchor_failure: 'Anchor outage', chaos: 'Combined stress' };
 
+export class ApiError extends Error {
+  constructor(message: string, public status: number) { super(message); this.name = 'ApiError'; }
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers }, signal: AbortSignal.timeout(30000) });
+  const response = await fetch(`/api/v1${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers }, signal: init?.signal ?? AbortSignal.timeout(30000) });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    const detail = typeof body?.detail === 'string' ? body.detail : `Request failed (${response.status})`;
-    throw new Error(detail);
+    const detail = typeof body?.detail === 'string' ? body.detail : Array.isArray(body?.detail) ? body.detail.map((item: { msg: string }) => item.msg).join('; ') : `Request failed (${response.status})`;
+    throw new ApiError(detail, response.status);
   }
+  if (response.status === 204) return undefined as T;
   return response.json();
 }
 export function download(name: string, content: string, type = 'application/json') {
@@ -22,7 +27,15 @@ export function download(name: string, content: string, type = 'application/json
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 export function samplesCsv(samples: Sample[]) {
-  return ['time_s,baseline_error_m,locus_x_error_m', ...samples.map(s => `${s.t},${s.baseline ?? ''},${s.proposed ?? ''}`)].join('\n');
+  const cell = (value: unknown) => {
+    const text = String(value ?? '');
+    return /[",\r\n]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
+  };
+  const rows = samples.map(s => [s.t, s.baseline, s.proposed, s.environment_id, s.floor_id,
+    s.frame_index, s.baselineUpdated, s.proposedUpdated, s.baselineRuntime, s.proposedRuntime,
+    s.covered95, s.truth?.[0], s.truth?.[1], s.basePosition?.[0], s.basePosition?.[1],
+    s.proposedPosition?.[0], s.proposedPosition?.[1]].map(cell).join(','));
+  return ['time_s,baseline_error_m,locus_x_error_m,environment_id,floor_id,frame_index,baseline_updated,locus_x_updated,baseline_runtime_ms,locus_x_runtime_ms,covered_95,truth_x_m,truth_y_m,baseline_x_m,baseline_y_m,locus_x_x_m,locus_x_y_m', ...rows].join('\n');
 }
 export function appendSample(history: Sample[], frame: Sample): Sample[] {
   const previous = history.at(-1);
