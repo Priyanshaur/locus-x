@@ -16,10 +16,13 @@ export function ErrorChart({ samples, height = 130 }: { samples: Sample[]; heigh
   };
   const selected = hover == null ? null : samples[Math.max(0, Math.min(samples.length - 1, hover))];
   return <div className="chart-wrapper">
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Actual baseline and LOCUS-X localization error over simulation time" onMouseLeave={() => setHover(null)} onMouseMove={event => {
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" tabIndex={0} aria-label="Actual baseline and LOCUS-X localization error over simulation time. Use arrow keys to inspect recorded samples." onFocus={() => setHover(samples.length - 1)} onBlur={() => setHover(null)} onKeyDown={event => {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setHover(current => Math.max(0, Math.min(samples.length - 1, (current ?? 0) + (event.key === 'ArrowLeft' ? -1 : 1)))); }
+    }} onMouseLeave={() => setHover(null)} onMouseMove={event => {
       const bounds = event.currentTarget.getBoundingClientRect();
       const px = (event.clientX - bounds.left) / bounds.width * width;
-      setHover(Math.round((px - left) / (width - left - right) * (samples.length - 1)));
+      const time = start + (px - left) / (width - left - right) * (end - start);
+      setHover(samples.reduce((nearest, sample, index) => Math.abs(sample.t - time) < Math.abs(samples[nearest].t - time) ? index : nearest, 0));
     }}>
       {[0, 0.5, 1].map(f => <g key={f}><line x1={left} x2={width - right} y1={y(ceiling * f)} y2={y(ceiling * f)} stroke="#304338" strokeDasharray="3 5" /><text x={left - 9} y={y(ceiling * f) + 4} textAnchor="end">{fmt(ceiling * f, 1)}</text></g>)}
       {[0, 0.25, 0.5, 0.75, 1].map(f => <text key={f} x={x(start + f * (end - start))} y={height - 3} textAnchor="middle">{fmt(start + f * (end - start), 0)}s</text>)}

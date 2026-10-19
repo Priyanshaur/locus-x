@@ -1,37 +1,54 @@
-import { Activity, ArrowUpRight, CircleDot, Radio, ShieldCheck } from 'lucide-react';
+import { Activity, ArrowUpRight, ChevronDown, Radio } from 'lucide-react';
 import { fmt, percent } from './lib';
-import type { Frame, Sample } from './types';
+import type { Floor, Frame, Sample } from './types';
+import { windowMetrics } from './workspace';
 
-export default function Diagnostics({ frame, history, technical }: { frame: Frame; history: Sample[]; technical: boolean }) {
-  const estimate = frame.tracking;
-  const validHistory = history.filter(sample => sample.proposed != null);
-  const rmse = validHistory.length ? Math.sqrt(validHistory.reduce((sum, sample) => sum + sample.proposed! ** 2, 0) / validHistory.length) : null;
-  return <aside className="diagnostics-panel">
-    <div className="panel-heading"><Activity size={15} /><h2>Live telemetry</h2><span className="live-dot" /></div>
-    <div className={`tracking-banner ${estimate.status !== 'tracking' ? 'degraded' : ''}`}><ShieldCheck size={17} /><div><strong>{estimate.status === 'tracking' ? 'Tracking active' : estimate.status === 'degraded' ? 'Degraded tracking' : 'Position unavailable'}</strong><span>{estimate.updated ? 'Measurement update accepted' : estimate.reason}</span></div></div>
-    <section className="telemetry-section error-section">
-      <div className="eyebrow">POSITION ERROR <span>vs. simulator truth</span></div>
-      <div className="error-metric"><div><i className="legend-mark baseline" />Conventional baseline</div><strong>{fmt(frame.evaluation.baseline_error)}<small>m</small></strong></div>
-      <div className="error-metric proposed"><div><i className="legend-mark proposed" />LOCUS-X</div><strong>{fmt(frame.evaluation.proposed_error)}<small>m</small></strong></div>
-      <div className="metric-footnote">Same observations · independent evaluation</div>
+export default function Diagnostics({ frame, floor, history, technical }: { frame: Frame; floor: Floor; history: Sample[]; technical: boolean }) {
+  const tracking = frame.tracking;
+  const baseline = windowMetrics(history, 'baseline'), proposed = windowMetrics(history, 'proposed');
+  const metrics = [
+    ['RMSE', fmt(baseline.rmse) + ' m', fmt(proposed.rmse) + ' m'],
+    ['Median', fmt(baseline.median) + ' m', fmt(proposed.median) + ' m'],
+    ['P95 error', fmt(baseline.p95) + ' m', fmt(proposed.p95) + ' m'],
+    ['Valid position', percent(baseline.validRate), percent(proposed.validRate)],
+    ['Fresh update', percent(baseline.updateRate), percent(proposed.updateRate)],
+    ['Mean latency', fmt(baseline.latency, 1) + ' ms', fmt(proposed.latency, 1) + ' ms'],
+    ['95% coverage', 'N/A', percent(proposed.coverage)],
+  ];
+  return <aside className="diagnostics-panel" aria-label="Actual localization results">
+    <div className="panel-heading"><Activity size={16} /><h2>Live comparison</h2><span className="live-label">2 METHODS</span></div>
+    <section className="current-errors">
+      <div><span><i className="legend-mark baseline" />Baseline</span><strong>{fmt(frame.evaluation.baseline_error)}<small>m</small></strong></div>
+      <div><span><i className="legend-mark proposed" />LOCUS-X</span><strong>{fmt(frame.evaluation.proposed_error)}<small>m</small></strong></div>
+      <p>Current error against simulator truth</p>
+    </section>
+    <section className="comparison-section">
+      <div className="section-title"><h3>Comparison window</h3><span className="mono">{history.length} frames</span></div>
+      <table className="comparison-table"><thead><tr><th scope="col">Metric</th><th scope="col">Baseline</th><th scope="col">LOCUS-X</th></tr></thead><tbody>
+        {metrics.map(([label, base, value]) => <tr key={label}><th scope="row">{label}</th><td>{base}</td><td>{value}</td></tr>)}
+      </tbody></table>
+      <p className="small-note">{fmt(history[0]?.t, 1)}–{fmt(history.at(-1)?.t, 1)} s · {proposed.valid}/{proposed.count} valid fixes<br />Coverage: {proposed.coverageCount} available ellipses. Baseline coverage is not evaluated. Fault edits retain tracker history.</p>
     </section>
     <section className="telemetry-section">
-      <div className="section-title"><span className="eyebrow">ESTIMATED POSITION</span><CircleDot size={13} /></div>
-      <div className="coordinates"><div><span>X</span><strong>{fmt(estimate.position?.[0])}<small>m</small></strong></div><div><span>Y</span><strong>{fmt(estimate.position?.[1])}<small>m</small></strong></div></div>
-      <div className="telemetry-row"><span>95% ellipse · semimajor</span><b>{fmt(estimate.ellipse?.major)} m</b></div>
-      <div className="telemetry-row"><span>Estimator + filter</span><b>{fmt(frame.robust.runtime_ms + estimate.runtime_ms, 1)} ms</b></div>
-      {technical && <><div className="telemetry-row"><span>Velocity · vx / vy</span><b>{fmt(estimate.velocity?.[0], 1)} / {fmt(estimate.velocity?.[1], 1)}</b></div><div className="telemetry-row"><span>Geometry condition</span><b>{fmt(frame.robust.condition_number, 1)}</b></div></>}
+      <div className="section-title"><h3>Position · {floor.short_name}</h3><span className={'tracking-state ' + tracking.status}><i />{tracking.status}</span></div>
+      <div className="coordinates"><div><span>X</span><strong>{fmt(tracking.position?.[0])}<small>m</small></strong></div><div><span>Y</span><strong>{fmt(tracking.position?.[1])}<small>m</small></strong></div></div>
+      <p className="tracking-reason">{tracking.reason}</p>
+      <div className="telemetry-row"><span>Nominal ellipse · major</span><b>{fmt(tracking.ellipse?.major)} m</b></div>
+      <div className="telemetry-row"><span>Known floor elevation</span><b>{fmt(frame.floor_elevation, 1)} m</b></div>
+      {technical && <><div className="telemetry-row"><span>Velocity · vx / vy</span><b>{fmt(tracking.velocity?.[0], 1)} / {fmt(tracking.velocity?.[1], 1)} m/s</b></div><div className="telemetry-row"><span>Geometry condition</span><b>{fmt(frame.robust.condition_number, 1)}</b></div><div className="telemetry-row"><span>Without an update</span><b>{fmt(tracking.outage_seconds, 1)} s</b></div></>}
     </section>
-    <section className="telemetry-section reliability-section">
-      <div className="section-title"><span className="eyebrow">ANCHOR CONSISTENCY</span><Radio size={13} /></div>
-      <div className="anchor-table-heading"><span>ANCHOR</span><span>{technical ? 'RESIDUAL' : 'SIGNAL'}</span><span>WEIGHT</span></div>
-      {frame.anchors.map(anchor => {
-        const label = frame.simulator_labels.find(l => l.anchor_id === anchor.id);
-        const weight = frame.robust.reliability[anchor.id];
-        return <div className="anchor-row" key={anchor.id}><span><i className={`status-dot ${label?.kind}`} />{anchor.id}</span><span className={label?.kind === 'nlos' ? 'fault-text' : 'muted'}>{technical ? `${fmt(frame.robust.residuals[anchor.id])} m` : label?.kind === 'los' ? 'LOS' : label?.kind === 'nlos' ? 'NLOS' : label?.kind === 'packet_loss' ? 'LOST' : label?.kind.toUpperCase()}</span><span className="weight-meter"><i><b style={{ width: `${(weight ?? 0) * 100}%` }} /></i><em>{weight == null ? '—' : fmt(weight, 2)}</em></span></div>;
-      })}
-      <p className="small-note">Weight = residual consistency, not LOS probability. Signal labels come from the simulator.</p>
-    </section>
-    <section className="telemetry-section session-summary"><div className="section-title"><span className="eyebrow">SESSION WINDOW</span><ArrowUpRight size={13} /></div><div className="telemetry-row"><span>LOCUS-X RMSE</span><b>{fmt(rmse)} m</b></div><div className="telemetry-row"><span>Position availability</span><b>{percent(history.length ? validHistory.length / history.length : null)}</b></div><p className="small-note">Last {history.length} samples. Current settings may vary.</p></section>
+    <details className="anchor-diagnostics" open>
+      <summary><span><Radio size={14} />Range observations</span><ChevronDown size={14} /></summary>
+      <table className="anchor-table"><thead><tr><th>Site</th><th>Range · m</th><th>{technical ? 'Residual · m' : 'Sim. label'}</th><th>Weight</th></tr></thead><tbody>
+        {frame.anchors.map(anchor => {
+          const label = frame.simulator_labels.find(l => l.anchor_id === anchor.id);
+          const measurement = frame.measurements.find(m => m.anchor_id === anchor.id);
+          const weight = frame.robust.reliability[anchor.id];
+          return <tr key={anchor.id}><th><i className={'status-dot ' + label?.kind} />{anchor.id}</th><td>{fmt(measurement?.observed_range)}</td><td className={label?.kind === 'nlos' ? 'fault-text' : 'muted'}>{technical ? fmt(frame.robust.residuals[anchor.id]) : label?.kind === 'packet_loss' ? 'LOST' : label?.kind.toUpperCase()}</td><td>{fmt(weight)}</td></tr>;
+        })}
+      </tbody></table>
+      <p className="small-note">Weights measure residual consistency. LOS/NLOS labels come from the simulator.</p>
+    </details>
+    <div className="inspector-foot"><ArrowUpRight size={13} /><span>2D estimation on a known floor.<br />Elevation is configuration, not an estimate.</span></div>
   </aside>;
 }
