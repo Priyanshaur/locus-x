@@ -1,5 +1,11 @@
 # Build status — 15 October 2026
 
+## Latest: V3 foundation, 19 October 2026
+
+The current implementation and executed verification are in [V3 status](v3-status.md). The V3 branch adds a versioned three-floor environment, known-floor 2D sessions, architectural inspection/layer controls and real comparison metrics. The original benchmark reproduced exactly. Browser visual acceptance remains pending because no browser surface was available in the implementation environment.
+
+The remainder of this file is the preserved **15 October reference-build record**, not a claim about the current V3 browser verification.
+
 ## Final integration audit update
 
 The audit fixes malformed scenario handling, duplicate disabled anchors, numerical initialization failures, reset semantics, obstruction preset activation and misleading status text. Working application code is preserved; no redesign was performed.

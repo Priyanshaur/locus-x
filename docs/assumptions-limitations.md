@@ -1,5 +1,11 @@
 # Assumptions and limitations
 
+## V3 foundation update
+
+The original single-floor reference remains available. V3 adds a fictional three-floor hospital at configured elevations, validated movement/door/core geometry, independent candidate sites and a selected-floor comparison interface. Localization itself is still **2D on a manually known floor**; floor switches reset tracking. There is no vertical estimate, cross-floor ranging or integrated transition state. Candidate sites do not constitute an optimized layout. Furniture and cutaway rendering are not propagation surfaces.
+
+V3 functional results are versioned separately from the reference. The browser tool in the V3 implementation session had no available browser, so WebGL appearance, responsive screenshots and real UI click/keyboard acceptance remain unverified here. See [V3 status](v3-status.md) for executed checks and [handoff](v3-handoff.md) for pending work. Historical statements below about one evaluated floor describe the original reference benchmark.
+
 ## What this demonstrates
 
 A complete local loop from synthetic observations through independently evaluated localization and an interactive 3-D display. It allows repeatable exploration of observability, inconsistent ranges, filter lag, uncertainty, outages and recovery.
